@@ -292,6 +292,83 @@ class TrackpadTests(unittest.TestCase):
         self.assertEqual(list(groups), ['apple'])
         self.assertEqual(groups['apple']['names'], ['apple-mtp-multi-touch'])
 
+    def test_m1_spi_trackpad_is_grouped_with_apple(self):
+        # M1/M1 Pro/Max attach the built-in trackpad over SPI rather than MTP.
+        # The generic 'trackpad' substring already detected it, but it fell to
+        # the default branch and was labeled with its raw device name.
+        groups = m.group_devices([{'name': 'apple-spi-trackpad'}, {'name': 'usb-mouse'}])
+        self.assertEqual(list(groups), ['apple'])
+        self.assertEqual(groups['apple']['names'], ['apple-spi-trackpad'])
+        self.assertEqual(groups['apple']['label'], 'Apple')
+
+    def test_spi_trackpad_shares_apple_group_with_magic_trackpad(self):
+        groups = m.group_devices([{'name': n} for n in [
+            'apple-spi-trackpad', 'apple-inc.-magic-trackpad', 'usb-mouse']])
+        self.assertEqual(set(groups), {'apple'})
+        self.assertEqual(len(groups['apple']['names']), 2)
+
+    def _settings(self, **overrides):
+        base = {'enabled': True, 'sensitivity': 0.0, 'scroll_factor': 0.4,
+                'natural_scroll': False, 'tap_to_click': True,
+                'clickfinger_behavior': True, 'disable_while_typing': True,
+                'accel_profile': 'adaptive', 'scroll_scale': 1}
+        base.update(overrides)
+        return base
+
+    def _saved_spi_state(self, key, **overrides):
+        settings = self._settings(**overrides)
+        return {'version': 4, 'devices': {key: {
+            'id': key, 'label': key, 'names': ['apple-spi-trackpad'],
+            'configured': True, 'settings': settings}}}
+
+    def test_spi_settings_saved_under_raw_name_migrate_to_apple(self):
+        # Releases before the SPI trackpad joined the Apple group keyed it by its
+        # raw name. Upgrading must not strand or duplicate those settings.
+        state = self._saved_spi_state('apple-spi-trackpad', scroll_factor=0.45, sensitivity=0.1)
+        upgraded = m.migrate(state)
+        self.assertEqual(list(upgraded['devices']), ['apple'])
+        group = upgraded['devices']['apple']
+        self.assertEqual(group['id'], 'apple')
+        self.assertEqual(group['label'], 'Apple')
+        self.assertEqual(group['names'], ['apple-spi-trackpad'])
+        self.assertTrue(group['configured'])
+        self.assertEqual(group['settings']['scroll_factor'], 0.45)
+        self.assertEqual(group['settings']['sensitivity'], 0.1)
+
+    def test_migrated_spi_state_merges_with_live_discovery_without_duplicates(self):
+        # The end-to-end shape of the upgrade: saved raw-name group plus the newly
+        # discovered 'apple' group must not collide on the shared device name.
+        state = m.migrate(self._saved_spi_state('apple-spi-trackpad', scroll_factor=0.45))
+        live = m.group_devices([{'name': 'apple-spi-trackpad'}])
+        new_devices = {k: g for k, g in live.items() if k not in state['devices']}
+        self.assertEqual(new_devices, {})
+        for key, group in live.items():
+            state['devices'][key]['names'] = sorted(
+                set(state['devices'][key]['names'] + group['names']))
+        self.assertEqual(m.migrate(state)['devices']['apple']['names'], ['apple-spi-trackpad'])
+
+    def test_regroup_prefers_settings_already_saved_under_canonical_key(self):
+        state = {'version': 4, 'devices': {
+            'apple': {'id': 'apple', 'label': 'Apple', 'names': ['apple-inc.-magic-trackpad'],
+                      'configured': True, 'settings': self._settings(scroll_factor=0.7)},
+            'apple-spi-trackpad': {'id': 'apple-spi-trackpad', 'label': 'apple-spi-trackpad',
+                                   'names': ['apple-spi-trackpad'], 'configured': True,
+                                   'settings': self._settings(scroll_factor=0.2)}}}
+        upgraded = m.migrate(state)
+        self.assertEqual(list(upgraded['devices']), ['apple'])
+        self.assertEqual(upgraded['devices']['apple']['settings']['scroll_factor'], 0.7)
+        self.assertEqual(upgraded['devices']['apple']['names'],
+                         ['apple-inc.-magic-trackpad', 'apple-spi-trackpad'])
+
+    def test_regroup_leaves_unrelated_device_keys_untouched(self):
+        state = {'version': 4, 'devices': {
+            'synps/2-synaptics-touchpad': {
+                'id': 'synps/2-synaptics-touchpad', 'label': 'synps/2-synaptics-touchpad',
+                'names': ['synps/2-synaptics-touchpad'], 'configured': True,
+                'settings': self._settings()}}}
+        upgraded = m.migrate(state)
+        self.assertEqual(list(upgraded['devices']), ['synps/2-synaptics-touchpad'])
+
     def test_curve_apply_is_atomic_and_only_emits_native_settings(self):
         state = m.migrate(self.state)
         with patch.object(m, 'hypr') as run, patch.object(m, 'save'):

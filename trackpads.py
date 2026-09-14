@@ -154,24 +154,73 @@ def validate_setting(key, value):
     return value
 
 
+def canonical_group(name):
+    """The (key, label) a trackpad belongs to, or None when it is not a trackpad."""
+    # Apple Silicon attaches the built-in trackpad over MTP on M2 and later, and
+    # over SPI on M1/M1 Pro/Max. Both are the built-in Apple trackpad.
+    is_builtin_apple = name in ('apple-mtp-multi-touch', 'apple-spi-trackpad')
+    # This Lenovo Synaptics touchpad omits the device type from its name.
+    is_known_touchpad = is_builtin_apple or name == 'synaptics-tm3512-010'
+    if not is_known_touchpad and not re.search('touchpad|trackpad', name, re.I):
+        return None
+    if is_builtin_apple or name.startswith('apple-inc.-magic-trackpad'):
+        return 'apple', 'Apple'
+    if name == 'ven_06cb:00-06cb:d01d-touchpad':
+        return 'dell', 'Dell'
+    return name, name
+
+
 def group_devices(mice):
     groups = {}
     for mouse in mice:
         name = mouse['name']
-        is_builtin_apple = name == 'apple-mtp-multi-touch'
-        # This Lenovo Synaptics touchpad omits the device type from its name.
-        is_known_touchpad = is_builtin_apple or name == 'synaptics-tm3512-010'
-        if not is_known_touchpad and not re.search('touchpad|trackpad', name, re.I):
+        canonical = canonical_group(name)
+        if canonical is None:
             continue
         validate_name(name)
-        if is_builtin_apple or name.startswith('apple-inc.-magic-trackpad'):
-            key, label = 'apple', 'Apple'
-        elif name == 'ven_06cb:00-06cb:d01d-touchpad':
-            key, label = 'dell', 'Dell'
-        else:
-            key, label = name, name
+        key, label = canonical
         groups.setdefault(key, {'id': key, 'label': label, 'names': []})['names'].append(name)
     return groups
+
+
+def regroup_legacy_keys(devices):
+    """Rekey groups saved under a raw device name that now belong to a named group.
+
+    A trackpad matched only by the generic 'touchpad|trackpad' search was keyed by
+    its raw Hyprland name. Promoting such a device to a named group -- the M1 SPI
+    trackpad joining Apple -- leaves the saved group under the old key, where it
+    collides with the newly discovered one and fails validation as a duplicate
+    name. Fold it into the canonical key so saved settings survive the upgrade.
+    """
+    if not isinstance(devices, dict):
+        return devices
+
+    def names_of(key, group):
+        names = group.get('names') if isinstance(group, dict) else None
+        return names if isinstance(names, list) and names else [key]
+
+    targets = {}
+    for key, group in devices.items():
+        canonical = canonical_group(str(names_of(key, group)[0]))
+        targets[key] = canonical[0] if canonical else key
+    if all(target == key for key, target in targets.items()):
+        return devices
+
+    regrouped = {}
+    # A group already stored under the canonical key keeps its settings; one being
+    # rekeyed contributes only its names, so an explicit choice is never discarded.
+    for key in sorted(devices, key=lambda k: targets[k] != k):
+        target = targets[key]
+        group = copy.deepcopy(devices[key])
+        group['names'] = names_of(key, group)
+        if target in regrouped:
+            regrouped[target]['names'] = sorted(set(regrouped[target]['names'] + group['names']))
+            continue
+        if target != key:
+            group['id'] = target
+            group['label'] = canonical_group(group['names'][0])[1]
+        regrouped[target] = group
+    return regrouped
 
 
 def lua_for(groups):
@@ -449,6 +498,7 @@ def migrate(state):
     if not isinstance(state, dict) or type(state.get('version')) is not int or state['version'] not in (1, 2, 3, 4):
         raise ValueError('Unsupported trackpad state version; saved settings were not changed')
     updated = copy.deepcopy(state)
+    updated['devices'] = regroup_legacy_keys(updated['devices'])
     for group in updated['devices'].values():
         settings = group['settings']
         settings.setdefault('accel_profile', 'adaptive')
