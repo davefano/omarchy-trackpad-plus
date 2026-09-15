@@ -19,8 +19,11 @@ class TrackpadTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         root = Path(temp.name)
+        # Empty input/udev trees keep host trackpads out of generated curves.
+        self.sysfs, self.udev = root / 'sys-input', root / 'udev-data'
         for name, value in [('DIRECTORY', root), ('STATE', root / 'settings.json'),
-                            ('GENERATED', root / 'settings.lua')]:
+                            ('GENERATED', root / 'settings.lua'),
+                            ('SYSFS_INPUT', self.sysfs), ('UDEV_DATA', self.udev)]:
             replacement = patch.object(m, name, value)
             replacement.start()
             self.addCleanup(replacement.stop)
@@ -39,6 +42,17 @@ class TrackpadTests(unittest.TestCase):
             del state['devices']['apple']
         state['devices'][name] = raw
         return state
+
+    def add_input_device(self, event, name, dev, vendor='0000', product='0000', udev=None):
+        device = self.sysfs / event / 'device'
+        (device / 'id').mkdir(parents=True)
+        (device / 'name').write_text(name + '\n')
+        (device / 'id' / 'vendor').write_text(vendor + '\n')
+        (device / 'id' / 'product').write_text(product + '\n')
+        (self.sysfs / event / 'dev').write_text(dev + '\n')
+        if udev is not None:
+            self.udev.mkdir(exist_ok=True)
+            (self.udev / ('c' + dev)).write_text(udev)
 
     def run_main(self, names, *args):
         def compositor(*command):
@@ -576,6 +590,46 @@ class TrackpadTests(unittest.TestCase):
             self.assertEqual(points[0], 0)
             self.assertEqual(points, sorted(points))
             self.assertAlmostEqual((points[-1] - points[-2]) / 0.1, curve['fast'])
+
+    def test_custom_curve_spacing_follows_device_resolution(self):
+        curve = dict(m.DEFAULT_CURVE, precision=0.1875, fast=1)
+        unscaled = m.curve_profile(curve).split()
+        self.assertEqual(unscaled[1], '0.1')
+        for resolution in [96, 47, 46, 12]:
+            scaled = m.curve_profile(curve, resolution).split()
+            # libinput feeds touchpad custom curves raw device units: scaling the
+            # spacing alone keeps the response identical per millimetre of travel.
+            self.assertAlmostEqual(float(scaled[1]) / resolution, 0.1 / m.NORMALIZED_UNITS_PER_MM)
+            self.assertEqual(scaled[2:], unscaled[2:])
+            m.validate_native_profile(' '.join(scaled))
+
+    def test_device_resolution_reads_udev_overrides_and_known_kernel_values(self):
+        self.add_input_device('event5', 'Apple SPI Touchpad', '13:69',
+                              udev='E:ID_INPUT=1\nE:EVDEV_ABS_00=::96\nE:EVDEV_ABS_01=::95\n')
+        self.add_input_device('event7', 'Apple Inc. Magic Trackpad', '13:71', '05ac', '0265')
+        self.add_input_device('event8', 'Apple Inc. Magic Trackpad', '13:72', '05ac', '0324',
+                              udev='E:EVDEV_ABS_00=1:7000:80:0:0\n')
+        self.add_input_device('event9', 'Unknown Touchpad', '13:73', '06cb', 'd01d', udev='E:ID_INPUT=1\n')
+        self.assertEqual(m.device_resolution('apple-spi-touchpad'), 96)
+        self.assertEqual(m.device_resolution('apple-inc.-magic-trackpad'), 47)
+        self.assertEqual(m.device_resolution('apple-inc.-magic-trackpad-1'), 47)
+        self.assertIsNone(m.device_resolution('unknown-touchpad'))
+        self.assertIsNone(m.device_resolution('missing-touchpad'))
+        (self.sysfs / 'event7').rename(self.sysfs / 'event99')
+        self.assertEqual(m.device_resolution('apple-inc.-magic-trackpad'), 80)
+
+    def test_mixed_resolution_group_emits_per_device_curves(self):
+        self.add_input_device('event5', 'Apple SPI Touchpad', '13:69', udev='E:EVDEV_ABS_00=::96\n')
+        self.add_input_device('event7', 'Apple Inc. Magic Trackpad', '13:71', '05ac', '0265')
+        groups = m.group_devices([{'name': 'apple-spi-touchpad'}, {'name': 'apple-inc.-magic-trackpad'},
+                                  {'name': 'apple-inc.-magic-trackpad-9'}, {'name': 'unlisted-trackpad'}])
+        curve = dict(m.DEFAULT_CURVE, precision=0.1875, fast=1)
+        for group in groups.values():
+            group['settings'] = {'accel_profile': 'custom', 'curve': curve, 'curve_preset': 'mac'}
+        lua = m.lua_for(groups)
+        for name, resolution in [('apple-spi-touchpad', 96), ('apple-inc.-magic-trackpad', 47),
+                                 ('apple-inc.-magic-trackpad-9', 47), ('unlisted-trackpad', None)]:
+            self.assertIn('name = "%s", accel_profile = "%s"' % (name, m.curve_profile(curve, resolution)), lua)
 
     def test_native_libinput_accepts_curve_and_rejects_old_81_point_payload(self):
         m.validate_native_curve(m.DEFAULT_CURVE)

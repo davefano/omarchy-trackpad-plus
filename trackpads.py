@@ -44,11 +44,17 @@ def validate_curve(value):
     return value
 
 
-def curve_profile(curve):
+def curve_profile(curve, resolution=None):
     """Sample output velocity, not gain; libinput linearly interpolates these points.
 
     Two samples beyond the visible end (4.0) keep extrapolation at constant gain.
     Keep this function in sync with Curve.js; the cross-language test compares both.
+
+    The curve is defined in libinput's normalized units (1000 dpi). libinput's
+    custom profile skips that normalization on touchpads and feeds raw device
+    units, so a 96 units/mm sensor would move ~2.4x faster than intended. Scaling
+    the sample spacing by resolution / (1000 / 25.4) and keeping the output
+    samples unchanged makes the curve identical in normalized units.
     """
     validate_curve(curve)
     points = []
@@ -57,7 +63,46 @@ def curve_profile(curve):
         t = max(0, min(1, (x - curve['start']) / (curve['end'] - curve['start'])))
         gain = curve['precision'] + (curve['fast'] - curve['precision']) * t * t * (3 - 2 * t)
         points.append(f'{x * gain:.6f}')
-    return 'custom 0.1 ' + ' '.join(points)
+    step = 0.1 if resolution is None else 0.1 * resolution / NORMALIZED_UNITS_PER_MM
+    return f'custom {step:.6g} ' + ' '.join(points)
+
+
+NORMALIZED_UNITS_PER_MM = 1000 / 25.4
+SYSFS_INPUT = Path('/sys/class/input')
+UDEV_DATA = Path('/run/udev/data')
+# Kernel X resolutions (units/mm) for Apple USB/Bluetooth trackpads, keyed by
+# product ID. hid-magicmouse sets them without a udev override:
+# Magic Trackpad = (3167 + 2909) / 130, Magic Trackpad 2 = (3934 + 3678) / 160.
+KERNEL_RESOLUTIONS = {('05ac', '030e'): 46, ('05ac', '0265'): 47, ('05ac', '0324'): 47}
+
+
+def device_resolution(name):
+    """X resolution (units/mm) of the Hyprland device `name`, or None if unknown.
+
+    Hyprland names are the evdev name lowercased with spaces as dashes, plus a
+    -N suffix for duplicates. The evdev node needs input permissions, so read
+    the udev database (hwdb EVDEV_ABS overrides) and sysfs IDs instead. Unknown
+    devices return None and keep the unscaled curve.
+    """
+    wanted = {name, re.sub(r'-[0-9]+$', '', name)}
+    for event in sorted(SYSFS_INPUT.glob('event*')):
+        try:
+            evdev_name = (event / 'device/name').read_text().strip()
+            if evdev_name.lower().replace(' ', '-') not in wanted:
+                continue
+            udev = UDEV_DATA / ('c' + (event / 'dev').read_text().strip())
+            if udev.exists():
+                for line in udev.read_text().splitlines():
+                    match = re.fullmatch(r'E:EVDEV_ABS_00=[^:]*:[^:]*:([0-9]+)(:.*)?', line)
+                    if match and int(match.group(1)) > 0:
+                        return int(match.group(1))
+            ids = tuple((event / 'device/id' / key).read_text().strip().lower()
+                        for key in ('vendor', 'product'))
+            if ids in KERNEL_RESOLUTIONS:
+                return KERNEL_RESOLUTIONS[ids]
+        except OSError:
+            continue
+    return None
 
 
 def hypr(*args):
@@ -185,19 +230,21 @@ def lua_for(groups):
     for group in groups.values():
         if not group.get('configured', True):
             continue
-        fields = []
-        for key, value in sorted(group['settings'].items()):
-            validate_setting(key, value)
-            if key in ('curve', 'curve_preset', 'scroll_scale'):
-                continue  # Editor metadata is never emitted as a Hyprland option.
-            if key == 'accel_profile' and value == 'custom':
-                value = curve_profile(group['settings'].get('curve', DEFAULT_CURVE))
-            fields.append(f'{key} = {json.dumps(value)}')
-        if group['settings'].get('accel_profile') == 'custom':
-            # Explicit identity scrolling, independent of the pointer curve.
-            fields.append('scroll_points = "1 0 1"')
         for name in group['names']:
             validate_name(name)
+            fields = []
+            for key, value in sorted(group['settings'].items()):
+                validate_setting(key, value)
+                if key in ('curve', 'curve_preset', 'scroll_scale'):
+                    continue  # Editor metadata is never emitted as a Hyprland option.
+                if key == 'accel_profile' and value == 'custom':
+                    # Per device: one group can mix sensors of different resolutions.
+                    value = curve_profile(group['settings'].get('curve', DEFAULT_CURVE),
+                                          device_resolution(name))
+                fields.append(f'{key} = {json.dumps(value)}')
+            if group['settings'].get('accel_profile') == 'custom':
+                # Explicit identity scrolling, independent of the pointer curve.
+                fields.append('scroll_points = "1 0 1"')
             lines.append('hl.device({ name = ' + json.dumps(name) + ', ' + ', '.join(fields) + ' })')
     return '\n'.join(lines + ['end']) + '\n'
 
