@@ -210,11 +210,15 @@ class TrackpadTests(unittest.TestCase):
         self.assertEqual(len(self.groups['apple']['names']),2)
 
     def test_lenovo_synaptics_without_touchpad_suffix_excludes_trackpoint(self):
-        name = 'synaptics-tm3512-010'
-        groups = m.group_devices([{'name': n} for n in [
-            name, 'tpps/2-elan-trackpoint', 'usb-mouse', 'synaptics-usb-mouse']])
-        self.assertEqual(set(groups), {name})
-        self.assertEqual(groups[name]['names'], [name])
+        # TM3512-010 and TM3381-002 (ThinkPad X280) are one Synaptics family.
+        # The suffixed name proves the match is anchored to the whole name.
+        names = ['synaptics-tm3512-010', 'synaptics-tm3381-002']
+        others = ['tpps/2-elan-trackpoint', 'usb-mouse', 'synaptics-usb-mouse',
+                  'synaptics-tm3381-002-trackpoint']
+        groups = m.group_devices([{'name': n} for n in names + others])
+        self.assertEqual(set(groups), set(names))
+        for name in names:
+            self.assertEqual(groups[name]['names'], [name])
 
     def test_ps2_synaptics_touchpad_slash_in_name_is_accepted(self):
         # ThinkPads (e.g. the T470) report the classic PS/2 Synaptics driver as

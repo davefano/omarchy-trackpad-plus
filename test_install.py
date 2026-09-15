@@ -72,8 +72,7 @@ else:
             self.assertIn('error', json.loads(result.stdout))
             self.assertFalse((self.root / 'state').exists())
 
-    def test_lenovo_touchpad_is_discovered_and_edits_leave_trackpoint_alone(self):
-        name = 'synaptics-tm3512-010'
+    def assert_lenovo_touchpad_round_trip(self, name):
         self.devices.write_text(json.dumps({'mice': [
             {'name': name, 'defaultSpeed': 0.0, 'scrollFactor': -1.0},
             {'name': 'tpps/2-elan-trackpoint', 'defaultSpeed': 0.0, 'scrollFactor': -1.0}
@@ -90,6 +89,13 @@ else:
         for payload in [rules.read_text(), (self.root / 'eval.log').read_text()]:
             self.assertIn(name, payload)
             self.assertNotIn('trackpoint', payload)
+
+    def test_lenovo_touchpad_is_discovered_and_edits_leave_trackpoint_alone(self):
+        self.assert_lenovo_touchpad_round_trip('synaptics-tm3512-010')
+
+    def test_thinkpad_x280_touchpad_is_discovered_from_its_part_number(self):
+        # The X280 reports the same Synaptics family as a different part number.
+        self.assert_lenovo_touchpad_round_trip('synaptics-tm3381-002')
 
     def test_future_state_is_preserved_byte_for_byte(self):
         self.call('state')

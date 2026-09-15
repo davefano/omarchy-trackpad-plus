@@ -45,9 +45,12 @@ Trackpad interfaces share one set of Apple settings. The known
 Dell touchpad is labeled Dell; other devices containing `touchpad` or `trackpad`
 in their Hyprland name are listed by that name. Disconnected devices retain their
 saved settings, and newly attached devices are discovered during state refreshes.
-The Lenovo Synaptics `synaptics-tm3512-010` is also recognized despite lacking
-either word in its name. Its separate TrackPoint is excluded. Other trackpads
-whose names omit both words may still need an explicit detection rule.
+Lenovo Synaptics touchpads are recognized by their `TM` part number even though
+names like `synaptics-tm3512-010` and `synaptics-tm3381-002` contain neither
+word. The part number is matched against the whole name, so a Synaptics mouse or
+any name carrying a suffix cannot match it. The separate TrackPoint is excluded.
+Other trackpads whose names omit both words may still need an explicit detection
+rule.
 
 ## The top-right gear: Device scale
 
