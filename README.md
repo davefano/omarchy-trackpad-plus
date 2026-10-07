@@ -6,6 +6,13 @@ Fine-grained, per-device trackpad controls and pointer-feel tuning for
 [Omarchy](https://omarchy.org). Independently maintained by David Fano;
 not an official Omarchy project or endorsed by the Omarchy team.
 
+## New in 2026.10.07.0
+
+Experimental macOS pointer profiles, sensor-aware custom curves, progressive
+scrolling and optional fullscreen/scratchpad swipes are now available. Existing
+profiles and defaults are preserved. Start with [the release notes](RELEASE_NOTES.md)
+for setup, compatibility, rollback and contributor credits.
+
 ## New in 2026.10.05.0
 
 - **Apple palm rejection:** adjust the contact-size threshold for the supported
