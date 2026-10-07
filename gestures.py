@@ -348,57 +348,7 @@ def inspect(source):
     return result
 
 
-def config_target(path):
-    """Resolve config links through trusted directories; state stays no-follow.
-
-    Stow may link a file or an entire directory. Resolve each link explicitly
-    under the same directory ownership checks used for state, then let the
-    no-follow reader/writer validate and access the final target.
-    """
-    path = Path(path)
-    if not path.is_absolute():
-        raise ValueError('Hyprland configuration paths must be absolute')
-    pending = list(path.parts[1:])
-    resolved, links = Path('/'), 0
-    directory = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        while pending:
-            part = pending.pop(0)
-            if part == '..':
-                child = os.open('..', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
-                os.close(directory)
-                directory = child
-                resolved = resolved.parent
-                continue
-            info = os.stat(part, dir_fd=directory, follow_symlinks=False)
-            if stat.S_ISLNK(info.st_mode):
-                links += 1
-                if links > 40:
-                    raise ValueError('Hyprland configuration has a symlink loop or too many links')
-                if info.st_uid not in (0, os.getuid()):
-                    raise ValueError('Hyprland configuration link is owned by another user')
-                target = Path(os.readlink(part, dir_fd=directory))
-                if target.is_absolute():
-                    child = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
-                    os.close(directory)
-                    directory = child
-                    resolved = Path('/')
-                    pending = list(target.parts[1:]) + pending
-                else:
-                    pending = list(target.parts) + pending
-                continue
-            if pending or stat.S_ISDIR(info.st_mode):
-                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
-                os.close(directory)
-                directory = child
-                info = os.fstat(directory)
-                shared_sticky = info.st_uid == 0 and info.st_mode & stat.S_ISVTX
-                if info.st_uid not in (0, os.getuid()) or (info.st_mode & 0o022 and not shared_sticky):
-                    raise ValueError('Hyprland configuration directories must not be writable by other users')
-            resolved /= part
-    finally:
-        os.close(directory)
-    return resolved
+config_target = core.config_target  # Shared with pointer profiles; Stow-aware.
 
 
 def config_files():

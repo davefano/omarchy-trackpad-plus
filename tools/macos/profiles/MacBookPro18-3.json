@@ -1,0 +1,120 @@
+{
+  "format": "trackpad-plus/pointer-profile",
+  "version": 1,
+  "kind": "apple-parametric",
+  "name": "MacBook Pro (M1 Pro)",
+  "tracking_speed": 0.875,
+  "curves": [
+    {
+      "index": 0,
+      "linear": 65536,
+      "parabolic": 0,
+      "cubic": 0,
+      "quartic": 0,
+      "tangent_linear": 484966,
+      "tangent_root": 1376256
+    },
+    {
+      "index": 8192,
+      "linear": 64881,
+      "parabolic": 32768,
+      "cubic": 5243,
+      "quartic": 0,
+      "tangent_linear": 478413,
+      "tangent_root": 1310720
+    },
+    {
+      "index": 32768,
+      "linear": 64225,
+      "parabolic": 43254,
+      "cubic": 6554,
+      "quartic": 0,
+      "tangent_linear": 471859,
+      "tangent_root": 1245184
+    },
+    {
+      "index": 45056,
+      "linear": 62915,
+      "parabolic": 54395,
+      "cubic": 7864,
+      "quartic": 0,
+      "tangent_linear": 465306,
+      "tangent_root": 1179648
+    },
+    {
+      "index": 57344,
+      "linear": 61604,
+      "parabolic": 65536,
+      "cubic": 9830,
+      "quartic": 0,
+      "tangent_linear": 458752,
+      "tangent_root": 1114112
+    },
+    {
+      "index": 65536,
+      "linear": 60293,
+      "parabolic": 75366,
+      "cubic": 11796,
+      "quartic": 0,
+      "tangent_linear": 458752,
+      "tangent_root": 1048576
+    },
+    {
+      "index": 98304,
+      "linear": 58327,
+      "parabolic": 85197,
+      "cubic": 13763,
+      "quartic": 0,
+      "tangent_linear": 458752,
+      "tangent_root": 983040
+    },
+    {
+      "index": 131072,
+      "linear": 56361,
+      "parabolic": 95027,
+      "cubic": 15729,
+      "quartic": 0,
+      "tangent_linear": 458752,
+      "tangent_root": 917504
+    },
+    {
+      "index": 163840,
+      "linear": 54395,
+      "parabolic": 108790,
+      "cubic": 18350,
+      "quartic": 0,
+      "tangent_linear": 458752,
+      "tangent_root": 851968
+    },
+    {
+      "index": 196608,
+      "linear": 65536,
+      "parabolic": 123208,
+      "cubic": 23593,
+      "quartic": 0,
+      "tangent_linear": 458752,
+      "tangent_root": 786432
+    }
+  ],
+  "driver": {
+    "resolution_dpi": 400.0,
+    "report_rate_hz": 120,
+    "event_rate_hz": 123.4,
+    "counts_per_inch": 400.0,
+    "deltas": "ideal",
+    "verified": "probe 2026-09-30: accelerator median error 0.03 %, curve within ±1.4 % at 15–254 mm/s"
+  },
+  "display": {
+    "points_wide": 1512,
+    "pixels_wide": 3024,
+    "width_mm": 301.21
+  },
+  "source": {
+    "os": "macOS 15.7.9 (24G830)",
+    "model": "MacBookPro18,3",
+    "device": "Apple Internal Keyboard / Trackpad",
+    "transport": "SPI",
+    "exported": "2026-10-01T00:09:49Z",
+    "exporter": 1
+  }
+}

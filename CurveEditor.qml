@@ -24,8 +24,19 @@ FocusScope {
   property bool numberPending: false
   property int hits: 0
   property int targetIndex: 0
-  readonly property bool custom: draft.profile === "mac" || draft.profile === "custom"
-  readonly property bool dirty: JSON.stringify(draft) !== JSON.stringify(saved)
+  // macOS profiles: rows from `trackpads.py profiles` for this trackpad.
+  property var profiles: []
+  property string profilesDirectory: ""
+  property string profilesStatus: ""
+  property bool drift: false
+  property var missingInterfaces: []
+  readonly property bool custom: draft.profile === "custom"
+  readonly property bool imported: draft.profile === "imported"
+  readonly property var importedRow: imported && draft.imported ? rowFor(draft.imported) : null
+  // Apple's tracking speed notches, as stored in the profile (the macOS slider's stops).
+  readonly property var speeds: importedRow && importedRow.speeds ? importedRow.speeds : []
+  readonly property bool canApply: (dirty || numberPending) && !busy && (!imported || !!draft.imported)
+  readonly property bool dirty: !Curve.same(draft, saved)
   signal applyRequested(var value)
   signal restoreRequested()
   signal backRequested()
@@ -39,8 +50,42 @@ FocusScope {
     hits = 0
   }
   function choose(profile) {
+    if (profile === "imported") {
+      if (saved.profile === "imported") { draft = Curve.copy(saved); return }
+      var first = profiles.filter(function(row) { return !row.error })[0]
+      draft = { profile: profile, curve: Curve.copy(draft.curve), imported: first ? reference(first) : null }
+      return
+    }
     var preset = editor.scrollMode ? Curve.scrollDefaults() : Curve.presetForScale(gainMaximum)
     draft = { profile: profile, curve: profile === "mac" ? preset : Curve.copy(draft.curve) }
+  }
+  function reference(row, speed) {
+    return { file: row.file, sha256: row.sha256, name: row.name, tracking_speed: speed === undefined ? row.tracking_speed : speed }
+  }
+  function rowFor(imported) {
+    for (var i = 0; i < profiles.length; i++)
+      if (profiles[i].file === imported.file && profiles[i].sha256 === imported.sha256) return profiles[i]
+    return null
+  }
+  // Choosing the applied file keeps its saved curve; Re-apply converts it for a new display.
+  function chooseFile(row) {
+    if (row.error) return
+    var current = saved.profile === "imported" && saved.imported && saved.imported.file === row.file
+      && saved.imported.sha256 === row.sha256
+    draft = current ? Curve.copy(saved) : { profile: "imported", curve: Curve.copy(draft.curve), imported: reference(row) }
+  }
+  // Returning to the applied speed restores the saved curve, so nothing is left to apply.
+  function setTrackingSpeed(speed) {
+    if (!importedRow) return
+    var applied = saved.profile === "imported" && Curve.same(saved, { profile: "imported", curve: saved.curve,
+      imported: reference(importedRow, speed) })
+    draft = applied ? Curve.copy(saved) : { profile: "imported", curve: Curve.copy(draft.curve), imported: reference(importedRow, speed) }
+  }
+  function reapply() {
+    var row = saved.imported ? rowFor(saved.imported) : null
+    if (!row || busy) return
+    draft = { profile: "imported", curve: Curve.copy(saved.curve), imported: reference(row, saved.imported.tracking_speed) }
+    applyRequested(Curve.copy(draft))
   }
   function adjust(handle, value, precise) {
     draft = { profile: "custom", curve: Curve.adjust(draft.curve, handle, value, precise, curveMaximum) }
@@ -52,6 +97,7 @@ FocusScope {
   Keys.onEscapePressed: backRequested()
 
   component Label: Text {
+    textFormat: Text.PlainText
     color: editor.foreground
     font.family: editor.fontFamily
     font.pixelSize: 13 * editor.uiScale
@@ -66,6 +112,7 @@ FocusScope {
     padding: 8 * editor.uiScale
     contentItem: Text {
       text: control.text
+      textFormat: Text.PlainText
       font: control.font
       color: editor.foreground
       horizontalAlignment: Text.AlignHCenter
@@ -192,12 +239,13 @@ FocusScope {
       Repeater {
         model: editor.scrollMode
           ? [{ id: "mac", name: "Mac-inspired" }, { id: "custom", name: "Custom" }]
-          : [{ id: "adaptive", name: "System" }, { id: "mac", name: "Mac-inspired" }, { id: "flat", name: "Flat" }, { id: "custom", name: "Custom" }]
+          : [{ id: "adaptive", name: "System" }, { id: "mac", name: "Mac-inspired" }, { id: "flat", name: "Flat" }, { id: "imported", name: "macOS" }, { id: "custom", name: "Custom" }]
         Action {
           required property var modelData
+          objectName: "profileChoice-" + modelData.id
           width: editor.scrollMode
             ? (contents.width - 5 * editor.uiScale) * (modelData.id === "mac" ? 1.4 : 1) / 2.4
-            : (contents.width - 15 * editor.uiScale) * (modelData.id === "mac" ? 1.4 : 1) / 4.4
+            : (contents.width - 20 * editor.uiScale) * (modelData.id === "mac" ? 1.4 : 1) / 5.4
           text: modelData.name
           selected: editor.draft.profile === modelData.id
           onClicked: editor.choose(modelData.id)
@@ -206,8 +254,10 @@ FocusScope {
     }
 
     Label {
+      visible: !editor.imported
       width: parent.width
       text: editor.scrollMode ? "Slow two-finger swipes stay precise; faster flicks cover more distance, like macOS."
+        : editor.draft.profile === "mac" ? "An experimental starting curve inspired by Mac tracking; tune it to your hand."
         : editor.custom ? "A steady precision range for small corrections, then a smooth rise for faster swipes."
         : editor.draft.profile === "flat" ? "Constant response at every finger speed. Use Pointer Speed in the main panel to adjust it."
         : "Use libinput’s adaptive response and your existing Pointer Speed setting."
@@ -216,7 +266,7 @@ FocusScope {
     Column {
       width: parent.width
       spacing: 6 * editor.uiScale
-      visible: editor.custom
+      visible: editor.custom || editor.draft.profile === "mac"
       Label { text: editor.scrollMode ? "Scroll travel (×)" : "Cursor travel (×)"; opacity: 0.7; font.pixelSize: 11 * editor.uiScale }
       Item {
         id: plot
@@ -350,7 +400,102 @@ FocusScope {
       }
     }
 
+    Column {
+      objectName: "importedSection"
+      width: parent.width
+      spacing: 8 * editor.uiScale
+      visible: editor.imported
+      Label {
+        objectName: "importedIncomplete"
+        visible: editor.saved.profile === "imported" && editor.missingInterfaces.length > 0
+        width: parent.width
+        text: "No converted curve for: " + editor.missingInterfaces.join(", ")
+          + ". These interfaces keep native tracking and scrolling; progressive scrolling waits for Re-apply. "
+          + "Provide their sensor resolution (see the profile setup instructions), then reapply the profile."
+          + (!editor.saved.imported || !editor.rowFor(editor.saved.imported) ? " Restore the source profile file first." : "")
+        font.pixelSize: 11 * editor.uiScale
+      }
+      Label {
+        visible: editor.drift && editor.saved.profile === "imported"
+        width: parent.width
+        objectName: "importedDrift"
+        text: editor.saved.imported && editor.rowFor(editor.saved.imported)
+          ? "Display scale changed since this was applied."
+          : "Display scale changed since this was applied, and its profile file has changed or is gone."
+        font.pixelSize: 11 * editor.uiScale
+      }
+      Action {
+        objectName: "reapplyProfile"
+        visible: (editor.drift || editor.missingInterfaces.length > 0) && editor.saved.profile === "imported" && !!editor.saved.imported && !!editor.rowFor(editor.saved.imported)
+        width: parent.width
+        text: editor.missingInterfaces.length ? "Re-apply for all interfaces" : "Re-apply for this display"
+        enabled: !editor.busy
+        onClicked: editor.reapply()
+      }
+      Label {
+        visible: editor.profilesStatus !== ""
+        width: parent.width
+        text: editor.profilesStatus
+        opacity: 0.7
+        font.pixelSize: 11 * editor.uiScale
+      }
+      Label {
+        objectName: "profilesEmpty"
+        visible: editor.profiles.length === 0 && editor.profilesStatus === ""
+        width: parent.width
+        text: "No macOS profiles yet. On your Mac, run python3 tools/macos/export-profile.py, then copy the .json file to "
+          + (editor.profilesDirectory || "~/.config/trackpad-plus/profiles") + "."
+        font.pixelSize: 11 * editor.uiScale
+        opacity: 0.8
+      }
+      Repeater {
+        model: editor.profiles
+        Action {
+          required property var modelData
+          required property int index
+          objectName: "profileRow" + index
+          width: parent.width
+          enabled: !modelData.error
+          selected: !!editor.draft.imported && editor.draft.imported.file === modelData.file
+            && editor.draft.imported.sha256 === modelData.sha256
+          text: modelData.error ? modelData.file + " · " + modelData.error : modelData.name
+          onClicked: editor.chooseFile(modelData)
+        }
+      }
+      Column {
+        visible: editor.speeds.length > 1
+        width: parent.width
+        spacing: 2 * editor.uiScale
+        Label { text: "Tracking speed"; opacity: 0.7; font.pixelSize: 11 * editor.uiScale }
+        Slider {
+          objectName: "trackingSpeed"
+          width: parent.width
+          from: 0
+          to: Math.max(1, editor.speeds.length - 1)
+          stepSize: 1
+          snapMode: Slider.SnapAlways
+          // The slider moves between notches; the nearest one shows the draft's speed.
+          value: {
+            var speed = editor.draft.imported ? editor.draft.imported.tracking_speed : 0
+            var best = 0
+            for (var i = 1; i < editor.speeds.length; i++)
+              if (Math.abs(editor.speeds[i] - speed) < Math.abs(editor.speeds[best] - speed)) best = i
+            return best
+          }
+          Accessible.name: "Tracking speed"
+          onMoved: editor.setTrackingSpeed(editor.speeds[Math.round(value)])
+        }
+        Item {
+          width: parent.width
+          height: slowLabel.implicitHeight
+          Label { id: slowLabel; text: "Slow"; opacity: 0.65; font.pixelSize: 11 * editor.uiScale }
+          Label { anchors.right: parent.right; text: "Fast"; opacity: 0.65; font.pixelSize: 11 * editor.uiScale }
+        }
+      }
+    }
+
     Label {
+      visible: !editor.imported
       width: parent.width
       text: editor.scrollMode && editor.draft.profile === "mac" ? "A starting curve inspired by macOS progressive scrolling. Apply, then flick vs creep to compare."
         : editor.draft.profile === "mac" ? "An experimental starting point inspired by Mac tracking; tune it to your hand."
@@ -368,7 +513,7 @@ FocusScope {
         text: editor.busy ? "Applying…" : "Apply & try"
         width: (parent.width - parent.spacing) / 2
         selected: true
-        enabled: (editor.dirty || editor.numberPending) && !editor.busy
+        enabled: editor.canApply
         onPressed: forceActiveFocus() // Commit typed text before reading the draft.
         onClicked: editor.applyRequested(Curve.copy(editor.draft))
       }

@@ -38,3 +38,33 @@ jobs:
           dpkg-query --show libinput10
       - name: Run portable checks
         run: bash tools/check.sh portable
+
+  macos-probe:
+    name: macOS probe compile and CLI checks
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Compile the optional measurement tool
+        run: swiftc -O tools/macos/probe.swift -o "$RUNNER_TEMP/trackpad-probe"
+      - name: Reject invalid arguments before opening a recording window
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+
+          runtime = Path(os.environ['RUNNER_TEMP'])
+          executable = runtime / 'trackpad-probe'
+          output = runtime / 'invalid-probe.csv'
+          cases = [[], [str(output), '--seconds']]
+          cases += [[str(output), '--seconds', value] for value in ('0', '-1', '301', 'nan', 'inf', 'nope')]
+          for args in cases:
+              result = subprocess.run([str(executable), *args], capture_output=True, text=True, timeout=10)
+              assert result.returncode == 2, (args, result.returncode, result.stderr)
+              assert 'Usage:' in result.stderr, (args, result.stderr)
+          assert not output.exists(), 'Invalid arguments must not write a recording'
+          print(f'{len(cases)} invalid-argument cases passed')
+          PY

@@ -58,6 +58,9 @@ elif sys.argv[1] == 'getoption':
                          else {'bool': settings['invert']})); sys.exit(0)
     print(json.dumps({'float': 0.2} if option in ('sensitivity', 'scroll_factor')
                      else {'bool': option != 'natural_scroll'}))
+elif sys.argv[1] == 'monitors':
+    print(json.dumps([{'name': 'eDP-1', 'width': 3024, 'height': 1890, 'scale': 2.0,
+                       'physicalWidth': 302, 'focused': True}]))
 elif sys.argv[1] == 'configerrors':
     print('')
 elif sys.argv[1] == 'reload':
@@ -77,6 +80,43 @@ else:
                                 env=self.env, capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout)
+
+    def macos_profile(self):
+        profiles = self.root / 'config/trackpad-plus/profiles'
+        profiles.mkdir(parents=True)
+        source = self.plugin / 'tools/macos/profiles/MacBookPro18-3.json'
+        shutil.copy2(source, profiles / source.name)
+        self.env['XDG_CONFIG_HOME'] = str(self.root / 'config')
+        self.call('state')
+        units = {'apple-inc.-magic-trackpad': 47.6, 'apple-inc.-magic-trackpad-1': 47.6}
+        self.call('set', 'apple', 'units_per_mm', json.dumps(units))
+        return source.name
+
+    def test_installed_copy_lists_macos_profiles(self):
+        name = self.macos_profile()
+        listed = self.call('profiles', 'apple')
+        self.assertEqual([row['file'] for row in listed['profiles']], [name])
+        row = listed['profiles'][0]
+        self.assertNotIn('error', row)
+        self.assertEqual(len(row['speeds']), 10)
+        self.assertEqual(listed['context']['monitor']['name'], 'eDP-1')
+        self.assertFalse((self.root / 'eval.log').exists() and 'custom' in (self.root / 'eval.log').read_text())
+
+    def test_installed_macos_profile_survives_restart_and_undo(self):
+        name = self.macos_profile()
+        row = self.call('profiles', 'apple')['profiles'][0]
+        curve = {'precision': 0.3, 'start': 0.8, 'end': 2.8, 'fast': 1.6}
+        applied = self.call('set', 'apple', 'pointer_feel', json.dumps(
+            {'profile': 'imported', 'curve': curve, 'imported': {'file': name, 'sha256': row['sha256']}}))
+        apple = next(device for device in applied['devices'] if device['id'] == 'apple')
+        self.assertEqual(apple['settings']['curve_preset'], 'imported')
+        self.assertFalse(apple['imported_drift'])
+        generated = (self.root / 'state/omarchy/toggles/hypr/zz-local-touchpads.lua').read_text()
+        self.assertEqual(generated.count('accel_profile = "custom 0.'), 2)
+        restarted = next(device for device in self.call('state')['devices'] if device['id'] == 'apple')
+        self.assertEqual(restarted['settings']['imported_curve'], apple['settings']['imported_curve'])
+        undone = self.call('set', 'apple', 'pointer_restore', json.dumps(apple['previous_pointer_feel']))
+        self.assertEqual(next(d for d in undone['devices'] if d['id'] == 'apple')['settings']['accel_profile'], 'adaptive')
 
     def test_optional_typing_guard_and_login_service_are_packaged(self):
         import configparser

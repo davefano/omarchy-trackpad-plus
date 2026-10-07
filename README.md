@@ -60,7 +60,7 @@ gestures apply across trackpads.
 
 - Enable or disable the selected trackpad.
 - Scroll speed (0.01–1.00, in 0.01 steps) with a per-device scale, and pointer speed (−1.0–1.0).
-- Pointer feel: System (adaptive), Flat, Mac-inspired, and Custom profiles.
+- Pointer feel: System (adaptive), Flat, Mac-inspired, macOS, and Custom profiles.
 - Progressive scrolling with a Mac-inspired or Custom scroll acceleration curve.
 - Visual acceleration editor with draggable precision, acceleration start/end, and fast-swipe
   handles, keyboard adjustment, target practice (pointer only), and Restore previous.
@@ -415,8 +415,9 @@ Shift+Up/Down uses **1.00** steps. The setting is saved for that device group.
 Upgrading preserves effective scroll speeds: existing values up to 1 keep a 1×
 scale, while values above 1 receive a matching scale. Schema 4 stores the
 effective `scroll_factor` and separate `scroll_scale`; only the effective factor
-is emitted to Hyprland. Back up both plugin and settings before upgrading;
-downgrading requires restoring the matching settings backup.
+is emitted to Hyprland. Schema 5 stores saved sensor calibration; schema 6 adds optional macOS profiles
+without recalibrating existing settings. Earlier backends refuse schema 6. Back up both plugin and settings
+before upgrading; downgrading requires restoring the matching settings backup.
 
 ## Progressive scrolling
 
@@ -449,7 +450,7 @@ travel multiplier, or gain. Slower finger movement gives you finer corrections;
 faster movement lets you cover more distance. The response follows finger speed,
 not how close the cursor is to a button or target.
 
-Choose **Custom** to adjust the curve, or **Mac-inspired** for a starting shape:
+Choose **Custom** to adjust the curve:
 
 | Control | What it changes |
 | --- | --- |
@@ -477,16 +478,14 @@ that device, including after a restart. Applied settings persist across shell
 restarts and Hyprland reloads. Escape returns to the main panel.
 
 **System** uses libinput adaptive acceleration with your saved Pointer Speed.
-**Flat** uses a constant response with that speed setting. In Custom and
-Mac-inspired mode, the curve replaces Pointer Speed; its saved value is retained
+**Flat** uses a constant response with that speed setting. In Custom, Mac-inspired and
+macOS mode, the curve replaces Pointer Speed; its saved value is retained
 for when you return to System or Flat.
 
-The Mac-inspired preset is an experimental approximation. Its base curve uses
-0.30× precision, Start at 20%, End at 70%, and 1.60× fast swipes. Choosing it with
-a lower Device scale reduces both gains proportionally to fit: at 1× scale,
-that gives 0.1875× precision and 1.00× fast swipes. Existing curves change only
-when you explicitly apply an edit or preset. This editor does not add scroll
-momentum or change gestures or haptic feedback.
+Existing curves change only when you explicitly apply an edit or profile. The
+editor does not add scroll momentum or change gestures or haptic feedback.
+**Mac-inspired** remains available as an experimental starting preset. Its saved
+curves and Undo history retain their existing response.
 
 Existing saved Custom and Mac-inspired curves retain their original spacing.
 An explicit **Apply & try** now saves per-interface sensor calibration when the
@@ -532,6 +531,60 @@ strips it or guesses its resolution. Newly discovered interfaces stay unscaled
 until a curve is explicitly applied to them.
 
 </details>
+
+## Experimental macOS pointer profiles
+
+**macOS** offers an optional approximation derived from exported Apple
+acceleration parameters and converted for libinput. It targets physical cursor
+travel on the same display, with documented timing and hardware limits. There is nothing to tune except **Tracking speed**, which has the
+same ten stops as the slider in macOS System Settings and starts at the Mac's own
+setting.
+
+1. **Export a profile on the Mac.** From a checkout of this repository, run
+   `python3 tools/macos/export-profile.py`. It reads public system information
+   with the system Python, needs no permissions or packages, and writes
+   `<model>.json`, for example `MacBookPro18-3.json`. An optional 30-second check
+   that confirms the curve against real finger movement is described in
+   [tools/macos/README.md](tools/macos/README.md).
+2. **Copy it to Omarchy:**
+
+   ```sh
+   mkdir -p ~/.config/trackpad-plus/profiles
+   install -m 600 MacBookPro18-3.json ~/.config/trackpad-plus/profiles/
+   ```
+
+3. **Choose Pointer feel → macOS**, pick the profile, set Tracking speed, and press
+   **Apply & try**. **Restore previous** works as for any other profile.
+
+A checked profile for the **MacBook Pro 14" (M1 Pro, 2021)** is included in
+[tools/macos/profiles](tools/macos/profiles), for that laptop when macOS is not at
+hand.
+
+Good to know:
+
+- The conversion needs each trackpad's resolution in units per millimetre. It is
+  built in for the MacBook Pro 14" (M1 Pro or M1 Max) under Asahi Linux. Unique
+  sensor data or saved calibration can supply other known interfaces. Unknown
+  interfaces are named in the Apply error; measure and save their resolution as
+  described in [tools/macos/README.md](tools/macos/README.md#trackpad-resolution).
+- The curve is converted for the built-in display's size and Hyprland scale. If the
+  scale changes, the panel shows **Display scale changed** with **Re-apply**.
+- The contributor reports conversion error within 2% over 6–600 mm/s for the
+  included M1 Pro profile; this is not a guarantee for other hardware. Stroke starts can still differ, because libinput times the
+  first movement after a pause differently from macOS; see
+  [What a curve cannot copy](tools/macos/README.md#what-a-curve-cannot-copy).
+- This option affects pointer movement only. Existing progressive scrolling stays
+  independent; matching Apple's scrolling and inertia is separate work.
+- A trackpad interface attached after Apply may have no converted curve yet. It
+  retains native tracking and scrolling, and the panel marks the import incomplete.
+  Existing converted interfaces keep their profile and progressive scrolling.
+  Provide the new interface's resolution using the setup instructions, restore
+  the source JSON if it was removed, and choose **Re-apply for all interfaces**.
+  The warning clears once every saved interface has a converted curve.
+- Profiles are read-only data in `${XDG_CONFIG_HOME:-~/.config}/trackpad-plus/profiles/`
+  (at most 32 files). Each must be a regular file owned by you and not writable by
+  others; the directory may be a Stow link. Applying stores the converted curve,
+  so editing or deleting the file never changes the live feel.
 
 ## David's MacBook Air M2 settings
 

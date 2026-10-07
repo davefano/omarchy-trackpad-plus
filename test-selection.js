@@ -15,9 +15,9 @@ function context() {
       { id: 'apple', label: 'Apple', connected: true, names: ['apple'], settings: { ...settings } },
       { id: 'dell', label: 'Dell', connected: true, names: ['dell'], settings: { ...settings, sensitivity: 0.3 } }
     ],
-    selectedDevice: 'apple', pendingActions: [], settingsError: '', deviceSettingsOpen: false,
+    selectedDevice: 'apple', pendingActions: [], settingsError: '', actionError: '', deviceSettingsOpen: false,
     editingCurve: false, gestureEditor: {activeFocus: false},
-    editGeneration: 0, stateGeneration: 0, refreshPending: false,
+    editGeneration: 0, stateGeneration: 0, refreshPending: false, pointerStatePending: false,
     actionProc: { running: false }, stateProc: { running: false }, backend: 'trackpads.py',
     palmProc: { running: false }, palmBackend: 'palm.py',
     palmEditor: { settings: {supported: false}, activeFocus: false, busy: false, dirty: false,
@@ -25,7 +25,8 @@ function context() {
       beginEditing() { this.activeFocus = true } },
     Model: require('./Model.js'),
     Curve: require('./Curve.js'), previousFeels: {}, previousScrollFeels: {},
-    curveKind: 'pointer', scrollProgressive: false,
+    curveKind: 'pointer', scrollProgressive: false, profilesRequest: 0, profilesPending: false,
+    profilesProc: {running: false}, pointerProfiles: {loading: false, error: '', directory: '', profiles: []},
     scrollFeel: { profile: 'mac', curve: require('./Curve.js').scrollDefaults() },
     curveEditor: {},
     keyCatcher: { forceActiveFocus() {} },
@@ -39,6 +40,19 @@ function context() {
   return ctx;
 }
 
+// Complete queued callbacks and accept a current backend state before another editor action.
+function reconcilePointerState(ctx) {
+  while (ctx.pendingActions.length) {
+    ctx.actionProc.running = false;
+    ctx.finishAction(0);
+  }
+  ctx.actionProc.running = false;
+  ctx.finishAction(0);
+  ctx.receiveState(JSON.stringify({devices: ctx.devices}));
+  ctx.stateProc.running = false;
+  ctx.finishStateRead(0);
+}
+
 {
   const ctx = context();
   ctx.actionProc.running = true;
@@ -47,6 +61,8 @@ function context() {
   assert.equal(ctx.devices[0].previous_pointer_feel.calibration.apple, 47,
     'optimistic undo must retain the old curve calibration');
   ctx.loadSelection();
+  reconcilePointerState(ctx);
+  ctx.actionProc.running = true; // Keep the restore queued so its payload can be inspected.
   ctx.restorePointerFeel();
   assert.equal(ctx.pendingActions.at(-1).option, 'pointer_restore');
   assert.equal(ctx.pendingActions.at(-1).value.calibration.apple, 47,
@@ -174,17 +190,19 @@ function context() {
   const ctx = context();
   ctx.actionProc.running = true;
   const original = JSON.stringify(ctx.pointerFeel);
-  ctx.applyPointerFeel({profile: 'mac', curve: ctx.Curve.defaults()});
+  ctx.applyPointerFeel({profile: 'custom', curve: ctx.Curve.defaults()});
   assert.equal(ctx.devices[0].settings.accel_profile, 'custom');
-  assert.equal(ctx.pointerFeel.profile, 'mac');
+  assert.equal(ctx.pointerFeel.profile, 'custom');
   ctx.selectDevice('dell');
   assert.equal(ctx.pointerFeel.profile, 'adaptive');
   assert.equal(ctx.previousFeels.dell, undefined);
   assert.equal(ctx.pendingActions[0].device, 'apple');
   ctx.selectDevice('apple');
+  reconcilePointerState(ctx);
+  ctx.actionProc.running = true;
   ctx.restorePointerFeel();
   assert.equal(JSON.stringify(ctx.pointerFeel), original);
-  assert.equal(ctx.pendingActions[1].value.profile, 'adaptive');
+  assert.equal(ctx.pendingActions.at(-1).value.profile, 'adaptive');
   assert.equal(ctx.devices[1].settings.accel_profile, 'adaptive');
 }
 
@@ -200,6 +218,98 @@ function context() {
   const backendExpression = qml.match(/readonly property string backend: (.*)/)[1];
   ctx.Qt = {resolvedUrl: () => 'file:///tmp/plugin%20with%20spaces/trackpads.py'};
   assert.equal(vm.runInContext(backendExpression, ctx), '/tmp/plugin with spaces/trackpads.py');
+}
+
+// Mac-inspired remains available alongside optional imported profiles.
+{
+  const Curve = require('./Curve.js');
+  const curve = {precision: 0.2, start: 0.8, end: 2.8, fast: 1};
+  const feel = Curve.fromSettings({accel_profile: 'custom', curve_preset: 'mac', curve});
+  assert.equal(feel.profile, 'mac');
+  assert.deepEqual(feel.curve, curve);
+  assert.equal(Curve.label(feel), 'Mac-inspired');
+  assert.ok(Curve.usesCurve('mac'), 'an earlier undo record still restores as a curve');
+  const ctx = context();
+  ctx.actionProc.running = true;
+  ctx.previousFeels.apple = {profile: 'mac', curve};
+  ctx.restorePointerFeel();
+  assert.equal(ctx.devices[0].settings.accel_profile, 'custom');
+  assert.equal(ctx.pointerFeel.profile, 'mac');
+}
+
+// macOS profiles: a previewed file is applied by reference and undone by its converted curve.
+{
+  const ctx = context();
+  ctx.actionProc.running = true;
+  const reference = {file: 'mac.json', sha256: 'a'.repeat(64), name: 'MacBook Pro (M1 Pro)', tracking_speed: 1.5};
+  ctx.applyPointerFeel({profile: 'imported', curve: ctx.Curve.defaults(), imported: reference});
+  assert.deepEqual(ctx.pendingActions[0].value.imported, {file: 'mac.json', sha256: 'a'.repeat(64), tracking_speed: 1.5},
+    'the backend receives the file reference and tracking speed, not the display name');
+  const settings = ctx.devices[0].settings;
+  assert.equal(settings.accel_profile, 'custom');
+  assert.equal(settings.curve_preset, 'imported');
+  assert.equal(ctx.pointerFeel.profile, 'imported');
+  assert.equal(ctx.Curve.label(ctx.pointerFeel), 'macOS · MacBook Pro (M1 Pro)');
+  ctx.deviceSettingsOpen = false;
+  ctx.activeTab = 'pointer';
+  assert.ok(!ctx.navigationSections().includes('pointer'), 'Pointer Speed is hidden for an imported curve');
+  ctx.pointerSpeed = 0.1;
+  ctx.adjustPointerSpeed(0.2);
+  assert.equal(ctx.pointerSpeed, 0.1);
+  reconcilePointerState(ctx);
+  ctx.applyPointerFeel({profile: 'flat', curve: ctx.Curve.defaults()});
+  assert.equal(ctx.devices[0].settings.imported_curve, undefined, 'leaving the profile drops its local curve');
+  assert.equal(ctx.devices[0].settings.curve_preset, 'custom');
+}
+
+{
+  const ctx = context();
+  ctx.actionProc.running = true;
+  const converted = {name: 'Mac', file: 'mac.json', sha256: 'b'.repeat(64), tracking_speed: 0.875,
+    mm_per_point: 0.2, px_per_point: 1, devices: {apple: {units_per_mm: 98.65, step: 0.1, points: [0, 1]}}};
+  ctx.devices[0].settings = {...ctx.devices[0].settings, accel_profile: 'custom', curve_preset: 'imported',
+    curve: ctx.Curve.defaults(), imported_curve: converted};
+  ctx.devices[0].imported_drift = true;
+  ctx.loadSelection();
+  assert.equal(ctx.pointerDrift, true);
+  ctx.applyPointerFeel({profile: 'adaptive', curve: ctx.Curve.defaults()});
+  assert.equal(ctx.pointerDrift, false, 'a new feel clears the drift notice locally');
+  reconcilePointerState(ctx);
+  ctx.actionProc.running = true;
+  ctx.restorePointerFeel();
+  assert.deepEqual(ctx.pendingActions.at(-1).value.imported, converted, 'undo needs no profile file');
+  assert.equal(ctx.devices[0].settings.curve_preset, 'imported');
+  assert.ok(ctx.Curve.same(ctx.pointerFeel, {profile: 'imported', curve: ctx.Curve.defaults(),
+    imported: {file: 'mac.json', sha256: 'b'.repeat(64), tracking_speed: 0.875}}), 'a reference equals its converted curve');
+  assert.ok(!ctx.Curve.same(ctx.pointerFeel, {profile: 'imported', curve: ctx.Curve.defaults(),
+    imported: {file: 'mac.json', sha256: 'b'.repeat(64), tracking_speed: 1}}), 'another tracking speed is a change');
+}
+
+{
+  const ctx = context();
+  ctx.profilesProc = {running: false};
+  ctx.editingCurve = true;
+  ctx.pointerProfiles = {loading: false, error: '', directory: '', profiles: []};
+  ctx.profilesRequest = 0;
+  ctx.refreshProfiles();
+  assert.deepEqual(Array.from(ctx.profilesProc.command), ['timeout', '-k', '2', '15', 'python3', 'trackpads.py', 'profiles', 'apple']);
+  const first = ctx.profilesProc.requestId;
+  ctx.refreshProfiles();
+  assert.equal(ctx.profilesPending, true, 'an overlapping open waits for the running read');
+  ctx.profilesProc.running = false;
+  ctx.finishProfiles(0, first);
+  assert.equal(ctx.profilesProc.running, true);
+  ctx.receiveProfiles(JSON.stringify({profiles: [{file: 'old.json'}]}), first);
+  assert.equal(ctx.pointerProfiles.loading, true, 'a superseded reply is dropped');
+  ctx.receiveProfiles(JSON.stringify({directory: '/p', profiles: [{file: 'new.json'}],
+    context: {interfaces: {apple: {units_per_mm: 98.65}}, monitor: {name: 'eDP-1'}}}), ctx.profilesProc.requestId);
+  assert.equal(ctx.pointerProfiles.profiles[0].file, 'new.json');
+  assert.equal(ctx.pointerProfiles.device, 'apple');
+  ctx.profilesProc.running = false;
+  ctx.refreshProfiles();
+  ctx.profilesProc.running = false;
+  ctx.finishProfiles(124, ctx.profilesProc.requestId);
+  assert.match(ctx.pointerProfiles.error, /Could not read pointer profiles/, 'a timed-out read reports an error');
 }
 
 {
@@ -404,12 +514,168 @@ console.log('Palm panel action scoping and stale-response checks passed.');
   ctx.curveKind = 'scroll';
   const first = {profile: 'custom', curve: {precision: 0.8, start: 0.5, end: 2.2, fast: 1.7}};
   const second = {profile: 'custom', curve: {precision: 1.2, start: 0.5, end: 2.2, fast: 2.8}};
-  ctx.applyPointerFeel(first);
-  ctx.applyPointerFeel(second);
+  ctx.enqueue("scroll_feel", first);
+  ctx.loadSelection();
+  ctx.enqueue("scroll_feel", second);
+  ctx.loadSelection();
   assert.equal(ctx.pendingActions.length, 2, 'scroll Apply operations must preserve undo ordering');
   assert.equal(JSON.stringify(ctx.previousScrollFeels.apple), JSON.stringify(first));
-  ctx.restorePointerFeel();
+  ctx.enqueue("scroll_feel", ctx.previousScrollFeels.apple);
+  ctx.loadSelection();
   assert.equal(ctx.pendingActions.length, 3);
   assert.equal(JSON.stringify(ctx.pendingActions[2].value), JSON.stringify(first));
   assert.equal(JSON.stringify(ctx.previousScrollFeels.apple), JSON.stringify(second));
+}
+
+// Imported undo retains the materialized curve and calibration; the editable draft stays clean.
+{
+  const ctx = context();
+  ctx.actionProc.running = true;
+  const imported = {file: 'saved.json', sha256: 'c'.repeat(64), tracking_speed: 1,
+    name: 'Mac', devices: {apple: {step: 0.1, points: [0, 1]}}};
+  ctx.devices[0].settings = {...ctx.devices[0].settings, accel_profile: 'custom',
+    curve_preset: 'imported', imported_curve: imported, curve: ctx.Curve.defaults()};
+  ctx.devices[0].curve_calibration = {apple: 47};
+  ctx.loadSelection();
+  ctx.applyPointerFeel({profile: 'custom', curve: ctx.Curve.defaults()});
+  reconcilePointerState(ctx);
+  ctx.actionProc.running = true;
+  ctx.restorePointerFeel();
+  const restore = ctx.pendingActions.at(-1);
+  assert.equal(restore.option, 'pointer_restore');
+  assert.deepEqual(restore.value.imported, imported);
+  assert.equal(restore.value.calibration.apple, 47);
+  assert.equal(ctx.curveEditor.draft.profile, 'imported');
+  assert.equal(ctx.Curve.same(ctx.curveEditor.draft, ctx.pointerFeel), true);
+  assert.equal(Object.hasOwn(ctx.curveEditor.draft, 'calibration'), false);
+  reconcilePointerState(ctx);
+  ctx.actionProc.running = true;
+  ctx.applyPointerFeel(ctx.curveEditor.draft);
+  assert.deepEqual(ctx.pendingActions.at(-1).value.imported,
+    {file: 'saved.json', sha256: 'c'.repeat(64), tracking_speed: 1},
+    'a fresh Apply resolves the source again rather than reusing undo data');
+}
+
+// Progressive scrolling stays independent of the imported pointer curve.
+{
+  const ctx = context();
+  ctx.actionProc.running = true;
+  const imported = {file: 'saved.json', sha256: 'd'.repeat(64), tracking_speed: 1};
+  ctx.applyPointerFeel({profile: 'imported', curve: ctx.Curve.defaults(), imported});
+  ctx.toggleProgressiveScroll();
+  assert.equal(ctx.pointerFeel.profile, 'imported');
+  assert.equal(ctx.devices[0].settings.scroll_progressive, true);
+  assert.equal(ctx.devices[0].settings.curve_preset, 'imported');
+  reconcilePointerState(ctx);
+  ctx.curveKind = 'scroll';
+  ctx.applyPointerFeel({profile: 'mac', curve: ctx.Curve.scrollDefaults()});
+  assert.equal(ctx.pointerFeel.profile, 'imported');
+  assert.equal(ctx.scrollFeel.curve.precision, 1);
+  assert.equal(ctx.scrollFeel.curve.fast, 2);
+}
+
+// Profile discovery never publishes a reply after device or tab changes.
+{
+  const ctx = context();
+  ctx.editingCurve = true;
+  ctx.refreshProfiles();
+  const request = ctx.profilesProc.requestId;
+  ctx.selectDevice('dell');
+  ctx.receiveProfiles(JSON.stringify({profiles: [{file: 'old.json'}]}), request);
+  assert.equal(ctx.pointerProfiles.profiles.length, 0);
+  ctx.profilesProc.running = false;
+  ctx.refreshProfiles();
+  const next = ctx.profilesProc.requestId;
+  ctx.changeTab('scrolling');
+  ctx.receiveProfiles(JSON.stringify({profiles: [{file: 'wrong-tab.json'}]}), next);
+  assert.equal(ctx.pointerProfiles.profiles.length, 0);
+  assert.equal(ctx.editingCurve, false);
+}
+console.log('Imported Apply/undo, progressive scrolling, retained Mac-inspired, and stale profile reads passed.');
+
+// An imported Apply finishes before the authoritative converted record is read.
+// Keep editor actions blocked across this gap, stale reads, and failed reads.
+{
+  const ctx = context();
+  ctx.editingCurve = true;
+  const imported = {file: 'mac.json', sha256: 'e'.repeat(64), tracking_speed: 1};
+  ctx.applyPointerFeel({profile: 'imported', curve: ctx.Curve.defaults(), imported});
+  ctx.actionProc.running = false;
+  ctx.finishAction(0);
+  assert.equal(ctx.stateProc.running, true);
+  assert.equal(ctx.pointerStatePending, true, 'finished write still awaits converted backend state');
+  const generation = ctx.editGeneration;
+  ctx.applyPointerFeel({profile: 'mac', curve: ctx.Curve.defaults()});
+  ctx.restorePointerFeel();
+  assert.equal(ctx.editGeneration, generation, 'Apply/Restore cannot capture a reference-only undo');
+  ctx.stateGeneration = generation - 1;
+  ctx.receiveState(JSON.stringify({devices: ctx.devices}));
+  assert.equal(ctx.pointerStatePending, true, 'a stale read cannot release editor actions');
+  ctx.stateGeneration = generation;
+  ctx.receiveState('{invalid json');
+  assert.equal(ctx.pointerStatePending, true);
+  ctx.receiveState('{}');
+  assert.equal(ctx.pointerStatePending, true, 'an incomplete response cannot release editor actions');
+  ctx.receiveState(JSON.stringify({error: 'display unavailable'}));
+  assert.equal(ctx.pointerStatePending, true, 'a failed read cannot release editor actions');
+  ctx.stateProc.running = false;
+  ctx.finishStateRead(124);
+  assert.match(ctx.settingsError, /display unavailable/);
+  ctx.refresh();
+  assert.equal(ctx.stateProc.running, true, 'normal refresh retries the authoritative read');
+  const rows = JSON.parse(JSON.stringify(ctx.devices));
+  rows[0].settings.imported_curve = {...imported, name: 'Mac', devices: {apple: {step: 0.1, points: [0, 1]}}};
+  rows[0].previous_pointer_feel = {profile: 'adaptive', curve: ctx.Curve.defaults(), calibration: {apple: 47}};
+  ctx.receiveState(JSON.stringify({devices: rows}));
+  assert.equal(ctx.pointerStatePending, false, 'current successful state releases the editor');
+  assert.equal(ctx.settingsError, '');
+  ctx.stateProc.running = false;
+  ctx.applyPointerFeel({profile: 'mac', curve: ctx.Curve.defaults()});
+  assert.equal(ctx.previousFeels.apple.imported.devices.apple.points[1], 1,
+    'the next Apply captures converted imported data for a valid restore');
+}
+
+
+// Switching progressive scrolling on creates the native preset only for non-custom pointers.
+{
+  for (const option of ['scroll_progressive', 'scroll_feel']) {
+    const ctx = context();
+    ctx.actionProc.running = true;
+    ctx.devices[0].settings.accel_profile = 'flat';
+    ctx.devices[0].settings.imported_curve = {file: 'stale.json'};
+    ctx.enqueue(option, option === 'scroll_progressive' ? true
+      : {profile: 'mac', curve: ctx.Curve.scrollDefaults()});
+    assert.equal(ctx.devices[0].settings.curve_preset, 'mac');
+    assert.equal(ctx.devices[0].settings.imported_curve, undefined,
+      'a native pointer preset must discard stale imported data');
+  }
+  assert.match(qml, /busy: actionProc\.running \|\| root\.pendingActions\.length > 0 \|\| root\.pointerStatePending/,
+    'the editor remains visibly blocked through authoritative reconciliation');
+}
+{
+  const ctx = context();
+  const saved = JSON.stringify({devices: ctx.devices});
+  ctx.applyPointerFeel({profile: 'mac', curve: ctx.Curve.defaults()});
+  ctx.actionProc.running = false;
+  ctx.finishAction(1);
+  ctx.receiveState(saved);
+  assert.equal(ctx.pointerStatePending, false, 'successful rollback state permits a retry');
+  assert.match(ctx.settingsError, /Could not save/, 'reconciliation must retain the failed-save message');
+  ctx.stateProc.running = false;
+  ctx.applyPointerFeel({profile: 'mac', curve: ctx.Curve.defaults()});
+  assert.equal(ctx.settingsError, '', 'an explicit retry clears the previous save error');
+}
+console.log('Pointer state reconciliation race and progressive-scroll imported-data cleanup passed.');
+
+{
+  const ctx = context();
+  ctx.devices[0].imported_missing_interfaces = ['apple-inc.-magic-trackpad-2'];
+  ctx.loadSelection();
+  assert.equal(ctx.pointerMissingInterfaces[0], 'apple-inc.-magic-trackpad-2');
+  ctx.selectDevice('dell');
+  assert.equal(ctx.pointerMissingInterfaces.length, 0, 'missing-interface notices belong to the selected device');
+  const summary = qml.match(/objectName: "pointerFeelSummary"[\s\S]*?font\.pixelSize: Style\.font\.caption/)[0];
+  assert.match(summary, /textFormat: Text\.PlainText/, 'profile subtitle must keep imported markup literal');
+  assert.match(qml, /missingInterfaces: root\.curveKind === "pointer" \? root\.pointerMissingInterfaces : \[\]/,
+    'the warning belongs to the pointer editor, not the independent scroll editor');
 }

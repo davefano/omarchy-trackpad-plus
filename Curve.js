@@ -61,10 +61,46 @@ function adjust(curve, handle, value, precise, maximum) {
 }
 
 function fromSettings(settings) {
-  return {
-    profile: settings.accel_profile === "custom" ? (settings.curve_preset || "custom") : settings.accel_profile,
+  // Keep both the Mac-inspired preset and optional imported macOS profile.
+  var preset = settings.curve_preset === "imported" || settings.curve_preset === "mac" ? settings.curve_preset : "custom"
+  var feel = {
+    profile: settings.accel_profile === "custom" ? preset : settings.accel_profile,
     curve: normalize(settings.curve || defaults())
   }
+  // The converted macOS curve travels with the feel so Restore previous needs no file.
+  if (feel.profile === "imported" && settings.imported_curve) feel.imported = copy(settings.imported_curve)
+  return feel
+}
+
+// Profiles that replace libinput's adaptive/flat response, so Pointer Speed does not apply.
+// Both built-in presets and imported profiles use custom libinput curves.
+function usesCurve(profile) { return profile === "mac" || profile === "custom" || profile === "imported" }
+
+function label(feel) {
+  if (feel.profile === "imported") return "macOS · " + (feel.imported && feel.imported.name || "profile")
+  return ({ adaptive: "System", flat: "Flat", mac: "Mac-inspired" })[feel.profile] || "Custom"
+}
+
+// Fresh Apply converts the file again; explicit pointer_restore sends its saved record separately.
+function request(feel) {
+  var value = { profile: feel.profile, curve: copy(feel.curve) }
+  if (feel.profile === "imported") {
+    var imported = feel.imported
+    value.imported = { file: imported.file, sha256: imported.sha256 }
+    if (imported.tracking_speed !== undefined) value.imported.tracking_speed = imported.tracking_speed
+  }
+  return value
+}
+
+// Equal feels apply the same curve: a reference and its converted curve share file, digest and speed.
+function same(a, b) {
+  function key(feel) {
+    var value = { profile: feel.profile, curve: feel.curve }
+    if (feel.profile === "imported")
+      value.imported = feel.imported ? [feel.imported.file, feel.imported.sha256, feel.imported.tracking_speed] : null
+    return JSON.stringify(value)
+  }
+  return key(a) === key(b)
 }
 
 function fromScrollSettings(settings) {
@@ -74,4 +110,4 @@ function fromScrollSettings(settings) {
   }
 }
 
-if (typeof module !== "undefined") module.exports = { defaults, scrollDefaults, presetForScale, copy, normalize, gain, points, sampledGain, adjust, fromSettings, fromScrollSettings }
+if (typeof module !== "undefined") module.exports = { defaults, scrollDefaults, presetForScale, copy, normalize, gain, points, sampledGain, adjust, fromSettings, fromScrollSettings, usesCurve, label, request, same }

@@ -155,9 +155,29 @@ already controlled by another process with the same user privileges.
 - Symlinked state directories and shared writable state files now fail closed.
   Use real, privately writable directories and an absolute `XDG_STATE_HOME`.
   If relocating state, ensure Omarchy loads the corresponding generated Lua.
-- Tested host dependencies: Hyprland 0.56.2, libinput 1.31.3, Qt 6.11.2.
+- Tested host dependencies: Hyprland 0.56.2, libinput 1.31.3, Qt 6.11.2. macOS
+  profiles were also tested with libinput 1.32.0 on Asahi Linux (MacBook Pro 14", M1 Pro).
   The plugin requires Lua-based Hyprland configuration and native custom-profile
   support. A successful API response cannot prove every hardware option took
   effect on every supported device.
+
+## Addendum: macOS pointer profiles (2026-09-30)
+
+Profiles are untrusted data. Each file in the profiles directory passes the same
+private-file checks as state (regular file, owned by the user, no hard links, not
+writable by others; the directory may be a Stow link through trusted directories),
+is read up to 64 KiB, and is parsed against a strict schema with an exact key set and
+bounded finite numbers; at most 32 files are listed. Only the converted, natively
+validated `custom <step> <points>` literal reaches the generated Lua. Apply names a
+file by its SHA-256, so a file changed after listing is refused rather than applied.
+The listing runs as a bounded panel process, and the display query reuses the
+existing `hyprctl` deadline and output limit. The runtime still never reads input
+devices, runs as root, or uses the network; measuring an unknown trackpad's
+resolution is a documented, one-time, read-only `sudo` command the user runs.
+
+The macOS exporter is a separate tool run by the user on a Mac. It runs read-only
+system commands (`ioreg`, `defaults`, `system_profiler`, `sw_vers`, and an
+`osascript` display query) with a 30-second deadline and stores no serial numbers,
+user names or other identifiers. The optional check uses AppKit's public touch API.
 
 Original Git history and both MIT copyright notices remain intact.

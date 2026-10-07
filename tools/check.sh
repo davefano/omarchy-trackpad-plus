@@ -19,6 +19,8 @@ run() {
 export PYTHONDONTWRITEBYTECODE=1
 run python3 -m json.tool manifest.json /dev/null
 run python3 test_trackpads.py
+run python3 test_pointer_profiles.py
+run python3 tools/macos/test_export_profile.py
 run python3 test_palm.py
 run python3 test_typing_guard.py
 run python3 test_gestures.py

@@ -49,12 +49,17 @@ This release identifier is separate from the backend's settings schema version.
   `EVDEV_ABS_00`, or known Apple USB/Bluetooth IDs. Duplicate native names
   remain unscaled; added compositor `-N` suffixes never fall back to a base name.
   A unique exact native name can be calibrated even when it ends in digits.
-  Rendering uses saved calibration, never live hardware. Schema 5 accepts versions 1–4 without recalibrating saved
+  Rendering uses saved calibration, never live hardware. Schema 6 accepts versions 1–5 without recalibrating saved
   curves; old undo records gain empty `calibration` metadata, preserving their
   original spacing. Every pointer edit saves the previous curve and calibration;
   undo payloads may restore that exact record. Device scale semantics stay the
   same. Tests point `SYSFS_INPUT`/`UDEV_DATA` at temporary trees so host devices
   never leak in.
+- `pointer_profiles.py`: stdlib-only macOS profile validation, Apple's parametric
+  transfer model, and conversion to 64-point materialized libinput curves.
+  `profiles DEVICE` lists profile files and per-interface resolution sources.
+- `tools/macos/`: read-only exporter, optional AppKit movement probe, and a
+  contributor-checked M1 Pro profile. These tools do not run in the plugin.
 - `gestures.py` / `GestureEditor.qml`: global workspace gestures, explicit
   adoption of literal bindings in input.lua, marked-block persistence and
   compare-before-restore recovery. Uses the existing bounded subprocesses,
@@ -140,6 +145,14 @@ scroll curve. Consecutive `scroll_feel` writes retain their queue order, like
 `pointer_feel`, so Apply/Restore preserves the previous curve. Progressive
 scrolling requires the custom pointer profile; enabling it from System/Flat
 selects a Mac-inspired pointer curve, and choosing System/Flat disables it.
+
+Schema 6 adds optional imported macOS pointer profiles while preserving schema-5
+calibration, legacy presets, and Undo. Apply sends an imported file reference,
+digest and tracking speed; the backend verifies and materializes each interface's
+curve once. Imported curves are already scaled and must not receive ordinary
+sensor calibration again. Imported Undo carries the materialized curve and needs
+no profile file. Progressive scrolling remains independent. Profiles with unknown
+interface resolution are rejected clearly. Display-scale drift prompts Re-apply.
 Do not change saved group IDs or historical state paths without a migration.
 
 ## Complete automated suite
@@ -175,6 +188,8 @@ Controls/Test, and Qt development tools (`qmllint`, `qmltestrunner`):
 
 ```sh
 python3 test_trackpads.py
+python3 test_pointer_profiles.py
+python3 tools/macos/test_export_profile.py
 python3 test_palm.py
 python3 test_typing_guard.py
 python3 test_gestures.py
